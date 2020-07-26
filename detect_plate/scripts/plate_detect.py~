@@ -1,0 +1,195 @@
+#!/usr/bin/env python
+
+"""
+    Author: Abdur Rosyid
+    Website: https://abdurrosyid.com
+    Email: abdoorasheed@gmail.com
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details at:
+
+    http://www.gnu.org/licenses/gpl.html
+"""
+
+import rospy, sys, numpy as np
+import math
+import moveit_commander
+from copy import deepcopy
+import geometry_msgs.msg
+from detect_plate.msg import Tracker
+import moveit_msgs.msg
+import cv2, cv_bridge
+from sensor_msgs.msg import Image
+from std_msgs.msg import Float64
+
+from std_msgs.msg import Header
+from trajectory_msgs.msg import JointTrajectory
+from trajectory_msgs.msg import JointTrajectoryPoint
+tracker = Tracker()
+
+class plate_detect:
+    def __init__(self):
+        rospy.init_node("plate_detect", anonymous=False)
+        self.track_flag = False
+        #self.default_pose_flag = True
+        self.cx = 400.0
+        self.cy = 400.0
+        self.bridge = cv_bridge.CvBridge()
+        cv2.namedWindow("Trackbars")
+        cv2.createTrackbar("L-H", "Trackbars", 1, 255, self.image_callback) #0
+        cv2.createTrackbar("L-S", "Trackbars", 0, 255, self.image_callback) #0
+        cv2.createTrackbar("L-V", "Trackbars", 97, 255, self.image_callback) #0
+        cv2.createTrackbar("U-H", "Trackbars", 180, 255, self.image_callback) #255
+        cv2.createTrackbar("U-S", "Trackbars", 26, 255, self.image_callback) #15
+        cv2.createTrackbar("U-V", "Trackbars", 255, 255, self.image_callback) #255
+        self.image_sub = rospy.Subscriber('/camera/color/image_raw', Image, self.image_callback) # for realsense camera
+        self.cxy_pub = rospy.Publisher('/detect_plate_pose', Tracker, queue_size=1)
+
+
+    def image_callback(self,msg):
+        # BEGIN BRIDGE
+        image1 = self.bridge.imgmsg_to_cv2(msg,desired_encoding='bgr8')
+        dim = (image1.shape[1]/2, image1.shape[0]/2)
+        image = cv2.resize(image1, dim, interpolation = cv2.INTER_AREA)
+        # END BRIDGE
+        # BEGIN HSV
+
+
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        # END HSV
+
+        # BEGIN FILTER
+        l_h = cv2.getTrackbarPos("L-H", "Trackbars")
+        l_s = cv2.getTrackbarPos("L-S", "Trackbars")
+        l_v = cv2.getTrackbarPos("L-V", "Trackbars")
+        u_h = cv2.getTrackbarPos("U-H", "Trackbars")
+        u_s = cv2.getTrackbarPos("U-S", "Trackbars")
+        u_v = cv2.getTrackbarPos("U-V", "Trackbars")
+
+        lower_white = np.array([l_h, l_s, l_v])
+        upper_white = np.array([u_h, u_s, u_v])
+
+        # RED
+        #lower_red = np.array([ 0,  100, 100])
+        #upper_red = np.array([10, 255, 255])
+        #mask = cv2.inRange(hsv, lower_red, upper_red)
+        # WHITE
+        #lower_white = np.array([ 0, 0, 97])
+        #upper_white = np.array([ 0, 0, 255])
+        mask = cv2.inRange(hsv, lower_white, upper_white)
+        (_, cnts, _) = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) # For Python 3
+        #(cnts, _) = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) # For earlier Python
+        #area = cv2.contourArea(cnts)
+        h, w, d = image.shape
+        # print h, w, d  (800,800,3)
+        #BEGIN FINDER
+        M = cv2.moments(mask)
+        if M['m00'] > 0:
+            cx = int(M['m10']/M['m00'])
+            cy = int(M['m01']/M['m00'])
+
+        # cx range (55,750) cy range( 55, ~ )
+        # END FINDER
+        # Isolate largest contour
+        #  contour_sizes = [(cv2.contourArea(contour), contour) for contour in cnts]
+        #  biggest_contour = max(contour_sizes, key=lambda x: x[0])[1]
+
+            #for i, c in enumerate(cnts):
+            #    area = cv2.contourArea(c)
+            for cnt in cnts:
+                area = cv2.contourArea(cnt)
+                epsilon = 0.04; #epsilon = 0.02
+                approx = cv2.approxPolyDP(cnt, epsilon*cv2.arcLength(cnt, True), True)
+                if area > 7500 and len(approx) == 4:
+
+                    extLeft = tuple(approx[approx[:, :, 0].argmin()][0])
+                    extRight = tuple(approx[approx[:, :, 0].argmax()][0])
+                    extTop = tuple(approx[approx[:, :, 1].argmin()][0])
+                    extBot = tuple(approx[approx[:, :, 1].argmax()][0])          
+                    
+                    ##extBot = tuple(approx[3][0])
+
+                    short_edge = math.sqrt(math.pow((extLeft[0]-extBot[0]),2)+math.pow((extLeft[1]-extBot[1]),2))
+                    long_edge_1 = math.sqrt(math.pow((extBot[0]-extRight[0]),2)+math.pow((extBot[1]-extRight[1]),2))
+                    long_edge_2 = math.sqrt(math.pow((extBot[0]-extRight[0]),2)+math.pow((extBot[1]-extRight[1]),2))
+
+                    ##centerOX = (extLeft[0]+extRight[0]+extTop[0]+extBot[0])/4
+                    ##centerOY = (extLeft[1]+extRight[1]+extTop[1]+extBot[1])/4
+
+                    centerOX = (approx[0][0][0]+approx[1][0][0]+approx[2][0][0]+approx[3][0][0])/4
+                    centerOY = (approx[0][0][1]+approx[1][0][1]+approx[2][0][1]+approx[3][0][1])/4
+
+                    self.track_flag = True
+                    self.cx = centerOX ##cx
+                    self.cy = centerOY ##cy
+                    self.error_x = self.cx - w/2
+                    self.error_y = self.cy - (h/2+195)
+                    tracker.x = centerOX ##cx
+                    tracker.y = centerOY ##cy
+                    tracker.plate_flag = self.track_flag
+                    tracker.error_x = self.error_x
+                    tracker.error_y = self.error_y
+                    #print("error x", tracker.error_x)
+                    #print("error y", tracker.error_y)
+                    #(_,_,w_b,h_b)=cv2.boundingRect(c)
+                    #print w_b,h_b
+                    # BEGIN circle
+
+                    cv2.circle(image, (centerOX, centerOY), 10, (0,0,0), -1)
+                    cv2.putText(image, "({}, {})".format(int(centerOX), int(centerOY)), (int(centerOX-5), int(centerOY+15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                    ##cv2.circle(image, (cx, cy), 10, (0,0,0), -1)
+                    ##cv2.putText(image, "({}, {})".format(int(cx), int(cy)), (int(cx-5), int(cy+15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                    #cv2.drawContours(image, cnts, -1, (255, 255, 255),1)
+                    cv2.drawContours(image, [approx], -1, (255, 255, 255), 1)
+                    # draw the outline of the object, then draw each of the extreme points, 
+                    # where the left-most is red, right-most is green, top-most is blue, and bottom-most is teal
+                    cv2.circle(image, extLeft, 8, (0, 0, 255), -1)   #red
+                    cv2.circle(image, extRight, 8, (0, 255, 0), -1)  #green
+                    cv2.circle(image, extTop, 8, (255, 0, 0), -1)    #blue
+                    cv2.circle(image, extBot, 8, (255, 255, 0), -1)  #teal
+                    #print("approx", approx)
+                    #print("extLeft", extLeft)
+                    #print("extRight", extRight)
+                    #print("extTop", extTop)
+                    #print("extBot", extBot)
+                    if short_edge < long_edge_1:
+                        theta = math.atan2(extRight[1] - extBot[1], extRight[0] - extBot[0])
+                        xmin = extLeft[0]
+                        ymin = extLeft[1]
+                        xmax = extRight[0]
+                        ymax = extRight[1]
+                    elif short_edge > long_edge_2:
+                        theta = math.atan2(extRight[1] - extTop[1], extRight[0] - extTop[0])
+                        xmin = extTop[0]
+                        ymin = extTop[1]
+                        xmax = extBot[0]
+                        ymax = extBot[1]
+
+                    #print ("theta", theta)                    
+                    tracker.theta = theta*57.2958
+                    self.cxy_pub.publish(tracker);
+                    cv2.putText(image, "({})".format(float(theta*57.2958)), (int(centerOX-5), int(centerOY+50)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    ##cv2.putText(image, "({})".format(float(theta*57.2958)), (int(cx-5), int(cy+50)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                    #BGIN CONTROL
+                    break
+                else:
+                    self.track_flag = False
+                    tracker.plate_flag = self.track_flag
+
+
+        #self.cxy_pub.publish(tracker)
+        cv2.namedWindow("window", 1)
+        cv2.imshow("window", image )
+        cv2.imshow("Trackbars", mask )
+        k = cv2.waitKey(1)
+        if k == 27:
+            exit(1)
+
+follower=plate_detect()
+rospy.spin()
+
