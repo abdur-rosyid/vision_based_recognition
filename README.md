@@ -1,1 +1,6 @@
 # vision_based_recognition
+
+- darknet_ros: contains a few folders to replace those in the following ROS package: https://github.com/leggedrobotics/darknet_ros.
+This code was written to estimate the 3D position (x,y,z) of a 3D object based on vision acquired by using an RGBD camera. This modified code is aimed at the vision-based object recognition performed in an onboard GPU computer such as Jetson which communicates with another onboard computer. In some circumstances, the two computers cannot work in a single ROS network. As a result, each of the two computers should run its own ROS master. This code is written to accomodate such a situation. After the 3D position is estimated, the position values are to be sent to the other computer through an Ethernet connection, not as ROS message. 
+To use this code, firstly the whole package in the mentioned link (https://github.com/leggedrobotics/darknet_ros) should be installed in the catkin workspace. Afterwards, a few folders should be replaced with the folders provided here.
+- detect_plate: a ROS package to recognize and locate a rectangular plate with a certain color. A color segmentation technique is performed using OpenCV by applying HSV thresholds. The HSV thresholds can be adjusted by using trackbars. Subsequently, the center point of the rectangular plate (x,y) is calculated.
